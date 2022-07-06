@@ -39,7 +39,7 @@ jobs:
           libjpeg-turbo-devel \
           libtiff-devel \
           openjpeg2-devel \
-          gdk-pixbuf2-devel \
+          gdk-pixbuf2-modules gdk-pixbuf2-devel \
           libxml2-devel \
           sqlite-devel \
           cairo-devel \
@@ -70,12 +70,27 @@ jobs:
       run: |
         autoreconf -i
         ./configure
-        make -j4
+        make -j4 CFLAGS="-O2 -g -Werror"
     - name: Cache pristine slides
       uses: actions/cache@v2
       with:
         key: pristine
         path: test/_slidedata/pristine
+    - name: Check for overlarge tests
+      if: ${{ matrix.os == 'ubuntu-latest' }}
+      run: |
+        # We don't want to allow arbitrarily large binary diffs into the
+        # repo, where they'll live in the Git history forever.  At the time
+        # of writing, our largest xdelta diff is 4881 bytes.  Arbitrarily
+        # set the cutoff at 6000.
+        # https://openslide.org/docs/testsuite/#tips
+        THRESHOLD=6000
+        large=$(find test/cases -type f -size +${THRESHOLD}c)
+        if [ -n "$large" ]; then
+            echo "Found test case files larger than $THRESHOLD bytes:"
+            echo "$large"
+            exit 1
+        fi
     # Can't cache frozen tests because cache doesn't handle sparse files
     - name: Unpack tests
       run: |
@@ -89,6 +104,38 @@ jobs:
     - name: Check exports
       if: ${{ matrix.os == 'ubuntu-latest' }}
       run: cd test && ./driver exports
+
+  windows_setup:
+    name: Set up Windows build
+    runs-on: ubuntu-latest
+    outputs:
+      pkgver: ${{ steps.params.outputs.pkgver }}
+    steps:
+      - name: Calculate parameters
+        id: params
+        run: |
+          case "${{ github.event_name }}" in
+          pull_request)
+              echo "::set-output name=pkgver::pr-${{ github.event.number }}.${{ github.run_number }}.${{ github.run_attempt }}-$(echo ${{ github.sha }} | cut -c-7)"
+              ;;
+          push)
+              echo "::set-output name=pkgver::${GITHUB_REF#refs/heads/}-$(echo ${{ github.sha }} | cut -c-7)"
+              ;;
+          *)
+              echo "Unknown event type ${{ github.event_name }}"
+              exit 1
+          esac
+
+  windows_build:
+    name: Windows build
+    needs: windows_setup
+    uses: openslide/openslide-winbuild/.github/workflows/windows.yml@main
+    with:
+      openslide_repo: openslide/openslide
+      openslide_ref: main
+      pkgver: ${{ needs.windows_setup.outputs.pkgver }}
+      werror: true
+
   docs:
     name: Docs
     runs-on: ubuntu-latest
